@@ -38,6 +38,8 @@ uv run python -m jevloop run --paper --forever         # run continuously, Ctrl+
 uv run python -m jevloop validate-symbol AAPL          # resolve any symbol before running on it
 uv run python -m jevloop explain-split                 # the deterministic vs probabilistic table
 uv run python -m jevloop calibrate                     # Brier score + reliability table
+uv run python -m jevloop replay                        # score Jev on 30 days of history (see Testing Jev on history)
+uv run python -m jevloop replay --score-only           # re-score saved answers, no Jev calls
 uv run python -m jevloop serve                         # dashboard at http://127.0.0.1:8765
 ```
 
@@ -100,12 +102,45 @@ calls were right about half the time at 1, 5 and 15 minutes and its "up"
 calls less than half, while every leg pays the spread and a taker fee.
 Turn it back on only once `jevloop calibrate` shows the call has skill.
 
+## Testing Jev on history
+
+`jevloop replay` tests Jev on history, so each question needn't wait hours
+live. For one decision point per hour over the last 30 days it builds a
+market-context state from the 24h before (`state_v2.py`, Coinbase data),
+asks battery v2 once (`build_questions_v2()` in `battery.py`: where the
+price will be in an hour, which of +0.5% / -0.5% comes first, and whether a
+0.5% move happens), and labels what really happened on Alpaca over the next
+hour. About 530 decision points cost about 530 Jev calls.
+
+- **No look-ahead, no leaks:** the state uses only bars that closed before
+  the decision minute, and holds no timestamps or absolute prices, so Jev
+  cannot recognise a date and remember what came next.
+- **Holdout:** the last 7 days are not sampled or scored unless
+  `--include-holdout` is passed. Look at them once, at the end.
+- **Baselines:** every Jev score is printed next to free code signals
+  (momentum, the Alpaca-Coinbase price gap, trailing volatility). Jev adds
+  value only if it beats them.
+- **Resumable:** answers are saved to `~/.jev-loop/replay/<variant>.jsonl`
+  as they arrive; rerunning skips what is done. History is cached per day
+  in `~/.jev-loop/history/`.
+
+**Result, variant `v2` (455 hourly samples, 2026-08-25 .. 09-15, jev-1.13.0,
+holdout untouched):** no usable signal. Direction AUC 0.49 and first-touch
+AUC 0.46, both no better than chance; P(up) Brier skill -0.38. Big-move AUC
+0.55 lost to trailing 1h volatility (0.67), which is free. Buying on Jev
+P(up) >= 0.4/0.5/0.6 and holding an hour lost about as much after fees as
+buying every hour (-0.44% to -0.52% per trade). Consistent with the live
+calibration run: Jev's answers here add nothing that code does not.
+
 ## Fees (why this strategy loses money)
 
 Alpaca charges crypto fees, on paper too: 0.15% maker, 0.25% taker at the
 lowest volume tier (https://docs.alpaca.markets/docs/crypto-fees), taken
-from what you receive. On 2026-09-23 fees were $17.50 of the paper
-account's $28.33 loss (0.122% of $14,340 traded). A quote round trip costs
+from what you receive. Paper fees are posted in batches, not per fill: on
+2026-09-23 the $17.50 posted by 05:34 UTC covered only the fills up to
+then (0.122% of $14,340 traded), and later fills were still unposted hours
+afterwards, so the account's equity can overstate results until they land.
+A quote round trip costs
 0.30% in fees against a BTC spread of about 0.03%, so quoting cannot pay
 for itself at this tier; a directional round trip needs a move above
 0.50%. Any strategy here has to clear those bars first.
@@ -164,6 +199,9 @@ Code in `jevloop/loop.py`, never Jev, and all of it runs after `risk.py`:
 | `jevloop/ladder.py` | The five-rung fallback ladder (RUN / REDUCE / HOLD_LATE / RULES_ONLY / KILL). |
 | `jevloop/execution/alpaca.py` | Alpaca execution and market data, crypto or equities: orders, position read and close, recent-trades window, rate limiter. Paper by default; live trading exists only behind the three-gate opt-in (see Live trading below). Refuses to place an equity order while the market is closed. |
 | `jevloop/loop.py` | The nine-stage block loop plus order placement (see How orders are placed). One JSON line per tick to `~/.jev-loop/log.jsonl`, and `~/.jev-loop/latest.json` for the dashboard. Cancels open orders on every exit. |
+| `jevloop/replay.py` | `jevloop replay`: samples history, asks battery v2, labels outcomes, and scores Jev against code baselines (AUC with 95% intervals, Brier skill, and one-hour trades after fees). Resumable; `--score-only` makes no Jev calls. |
+| `jevloop/state_v2.py` | Replay state (returns, ranges, volatility over 15m/1h/4h/24h, range position, distance from VWAP, volume, Alpaca-Coinbase gap) and outcome labelling. No timestamps or price levels. |
+| `jevloop/history.py` | Downloads and caches 1-minute BTC/USD bars per day: Coinbase (public, the real market) for the state, Alpaca for outcomes. |
 | `jevloop/calibrate.py` | Scores Jev's direction P(up) against the mid `--horizon` seconds later (default 300): Brier score vs a base-rate baseline (skill score), hit rate per call, share of moves big enough to pay the round-trip taker fee, and a 10-bin reliability table; `reliability.png` if matplotlib is present. Needs ticks logged with `direction_probs` (from 2026-09-23). |
 | `jevloop/serve.py` | Tiny static server for `dashboard/index.html` and `dashboard/wall.html`. Sends `Cache-Control: no-cache` so a browser picks up dashboard changes on reload. The page only re-fetches `latest.json` by itself, so after changing the dashboard, reload an open tab (Ctrl+F5) and restart `serve` after changing `serve.py`. |
 | `dashboard/*.html` | Two live dashboards, polling `latest.json`. No simulation. Tick, decision and late counts and uptime are for the whole run; charts show the last 90 ticks. Shows "stopped" once the loop stops writing. Each tick is labelled from logged facts: QUOTE BOTH / BID / ASK (blue) from the `quoted` field, FILLED BUY / SELL when the broker position moved (a quote filled), BUY / SELL for a directional leg, and LATE / STAND DOWN / PULL QUOTES (amber). |

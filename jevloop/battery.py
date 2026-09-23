@@ -81,11 +81,50 @@ REQUIRED_ANSWER_KEYS = {
 }
 
 
-def validate_answers(answers: dict) -> None:
+def build_questions_v2() -> dict:
+    """Battery v2, used by `jevloop replay` against state_v2.
+
+    Versus v1: the horizon is an hour (v1 asked about "the next 10 ticks",
+    20 seconds, far too short for a move to clear 0.5% of round-trip fees),
+    every option is defined (v1 sent empty criteria), and one question is
+    the one a trade actually needs answered: which comes first, +0.5% or
+    -0.5%. "The current price" is the latest price the state describes."""
+    questions = {
+        "direction_1h": {
+            "type": "choice",
+            "instructions": "One hour from now, where will the price be compared with the current price?",
+            "criteria": {
+                "up": "more than 0.25% above the current price",
+                "down": "more than 0.25% below the current price",
+                "flat": "within 0.25% of the current price",
+            },
+        },
+        "first_touch_1h": {
+            "type": "choice",
+            "instructions": "Within the next hour, which of these happens first?",
+            "criteria": {
+                "up_first": "the price rises 0.5% above the current price before it falls 0.5% below it",
+                "down_first": "the price falls 0.5% below the current price before it rises 0.5% above it",
+                "neither": "the price stays within 0.5% of the current price for the whole hour",
+            },
+        },
+        "big_move_1h": {
+            "type": "noul",
+            "instructions": (
+                "Will the price move at least 0.5% away from the current price, in "
+                "either direction, at some point within the next hour?"
+            ),
+        },
+    }
+    assert_split_respected(questions)
+    return questions
+
+
+def validate_answers(answers: dict, questions: dict | None = None) -> None:
     """Raise if the response is missing a question or a required field.
     Cheap insurance against a schema change on either the direct API or the
     gateway silently breaking policy.py's assumptions."""
-    questions = build_questions()
+    questions = questions or build_questions()
     for key, q in questions.items():
         if key not in answers:
             raise ValueError(f"battery response missing answer for '{key}'")

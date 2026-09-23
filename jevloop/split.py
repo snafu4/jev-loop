@@ -29,6 +29,17 @@ ALLOWED_QUESTIONS: dict[str, tuple[str, str]] = {
     ),
     "inventory_pressure": ("score", "how urgent it is to cut the current position"),
     "execution_health": ("score", "whether execution quality is optimal or degrading"),
+    # battery v2 (replay): horizons long enough for a move to clear fees,
+    # every option defined, asked of the richer state_v2 context
+    "direction_1h": (
+        "choice",
+        "whether the price will be above, below or near its current level in an hour",
+    ),
+    "first_touch_1h": (
+        "choice",
+        "which comes first within the hour: a 0.5% rise, a 0.5% fall, or neither",
+    ),
+    "big_move_1h": ("noul", "whether the price will move 0.5% either way within the hour"),
 }
 
 # Substrings that mean "this is asking Jev to do arithmetic", banned in any
