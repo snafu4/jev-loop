@@ -94,6 +94,22 @@ skew never changed a price. The hard risk caps stay separate, in
 `jevloop/limits.py`, and a strategy can never raise them, only add more
 caution on top.
 
+**The directional leg is off** (`directional_leg_enabled = False` in
+`strategy.py`). Over ~7,900 real-data ticks (2026-09-22/23), Jev's "down"
+calls were right about half the time at 1, 5 and 15 minutes and its "up"
+calls less than half, while every leg pays the spread and a taker fee.
+Turn it back on only once `jevloop calibrate` shows the call has skill.
+
+## Fees (why this strategy loses money)
+
+Alpaca charges crypto fees, on paper too: 0.15% maker, 0.25% taker at the
+lowest volume tier (https://docs.alpaca.markets/docs/crypto-fees), taken
+from what you receive. On 2026-09-23 fees were $17.50 of the paper
+account's $28.33 loss (0.122% of $14,340 traded). A quote round trip costs
+0.30% in fees against a BTC spread of about 0.03%, so quoting cannot pay
+for itself at this tier; a directional round trip needs a move above
+0.50%. Any strategy here has to clear those bars first.
+
 ## How orders are placed
 
 Code in `jevloop/loop.py`, never Jev, and all of it runs after `risk.py`:
@@ -130,7 +146,7 @@ Code in `jevloop/loop.py`, never Jev, and all of it runs after `risk.py`:
 
 | File | Job |
 |---|---|
-| `jevloop/strategy.py` | The file you edit: the seven decision thresholds behind `compose_action()`, the three quote-shape settings (wide and widen multipliers, skew weight), and the `apply_strategy()` hook to override or veto an action. |
+| `jevloop/strategy.py` | The file you edit: the seven decision thresholds behind `compose_action()`, the directional-leg switch (off), the three quote-shape settings (wide and widen multipliers, skew weight), and the `apply_strategy()` hook to override or veto an action. |
 | `jevloop/limits.py` | The hard risk caps and operational numbers (2s ticks, 150 Alpaca calls/min, $20 order size, $50 position cap). Never overridable by a strategy. |
 | `jevloop/assets.py` | Resolves any symbol into a spec: endpoints, notional floor, precision, shorting, market hours. |
 | `jevloop/state.py` | Deterministic state snapshot, under ~400 tokens, strict timestamp discipline, session VWAP, honest depth degradation. |
@@ -143,7 +159,7 @@ Code in `jevloop/loop.py`, never Jev, and all of it runs after `risk.py`:
 | `jevloop/ladder.py` | The five-rung fallback ladder (RUN / REDUCE / HOLD_LATE / RULES_ONLY / KILL). |
 | `jevloop/execution/alpaca.py` | Alpaca execution and market data, crypto or equities: orders, position read and close, recent-trades window, rate limiter. Paper by default; live trading exists only behind the three-gate opt-in (see Live trading below). Refuses to place an equity order while the market is closed. |
 | `jevloop/loop.py` | The nine-stage block loop plus order placement (see How orders are placed). One JSON line per tick to `~/.jev-loop/log.jsonl`, and `~/.jev-loop/latest.json` for the dashboard. Cancels open orders on every exit. |
-| `jevloop/calibrate.py` | Brier score + 10-bin reliability table from the log; `reliability.png` if matplotlib is present. |
+| `jevloop/calibrate.py` | Scores Jev's direction P(up) against the mid `--horizon` seconds later (default 300): Brier score vs a base-rate baseline (skill score), hit rate per call, share of moves big enough to pay the round-trip taker fee, and a 10-bin reliability table; `reliability.png` if matplotlib is present. Needs ticks logged with `direction_probs` (from 2026-09-23). |
 | `jevloop/serve.py` | Tiny static server for `dashboard/index.html` and `dashboard/wall.html`. |
 | `dashboard/*.html` | Two live dashboards, polling `latest.json`. No simulation. Tick, decision and late counts and uptime are for the whole run; charts show the last 90 ticks. Shows "stopped" once the loop stops writing. |
 | `tests/` | pytest, no network: policy thresholds, risk vetoes, the ladder, state maths, the asset resolver, the split guard, the mock client, the paper-URL guard, the three-gate live check, plus order placement against a fake broker (`test_execution_safety.py`, `test_quote_shape.py`, `test_sell_balance.py`) and real-tape parsing (`test_market_data.py`). |

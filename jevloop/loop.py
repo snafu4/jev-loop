@@ -385,6 +385,13 @@ def run(
                 "regime": answers["regime"]["choice"] if answers else None,
                 "regime_conf": answers["regime"]["confidence"] if answers else None,
                 "direction": answers["direction"]["choice"] if answers else None,
+                # confidence + probabilities: what calibrate.py scores
+                "direction_conf": (
+                    answers["direction"].get("confidence") if answers else None
+                ),
+                "direction_probs": (
+                    answers["direction"].get("probabilities") if answers else None
+                ),
                 "toxic_flow": answers["toxic_flow"]["noul"] if answers else None,
                 "liquidity_stressed": (
                     answers["liquidity_stressed"]["noul"] if answers else None
@@ -706,6 +713,8 @@ def _closed_market_record(block: int, now: float, symbol: str) -> dict:
         "regime": None,
         "regime_conf": None,
         "direction": None,
+        "direction_conf": None,
+        "direction_probs": None,
         "toxic_flow": None,
         "liquidity_stressed": None,
         "quote_environment": None,

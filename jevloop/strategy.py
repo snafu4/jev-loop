@@ -54,9 +54,15 @@ class StrategyThresholds:
     quote_env_wide_score: float = 1.0  # env >= this (but below full) -> quote wide
     inventory_pressure_max_score: float = 3.0  # denominator for the skew calculation
 
-    # the directional leg, bolted on so the demo shows fills, not just quotes
+    # The directional leg: a market order in Jev's called direction, bolted
+    # on by the video so the demo shows fills. OFF by default: over ~7,900
+    # real-data ticks (2026-09-22/23), Jev's "down" calls were right ~50% of
+    # the time at 1, 5 and 15 minutes, and "up" calls below 50%, while each
+    # leg pays the spread plus a 0.25% taker fee. Turn it back on only once
+    # `jevloop calibrate` shows the direction call has signal.
+    directional_leg_enabled: bool = False
     direction_confidence_threshold: float = (
-        0.55  # direction.confidence above this -> take the leg
+        0.55  # when enabled: direction.confidence above this -> take the leg
     )
 
     # quote shape (loop._shape_quotes). The half-spread is never narrower

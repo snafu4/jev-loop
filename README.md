@@ -62,7 +62,10 @@ strategy pulled out of thin air, wired in only so a demo run shows real
 fills. `jevloop/strategy.py` owns the seven tunable thresholds behind
 `compose_action()` and an `apply_strategy()` hook that gets one last
 look at every action before it goes near an order, free to change or
-veto it. The decision thresholds match what the video ran; the quote-shape
+veto it. The directional leg is switched off there (Jev's direction
+calls showed no signal in paper runs, and Alpaca's fees make each leg
+costly; see SKILL.md, "Fees"). The decision thresholds match what the
+video ran; the quote-shape
 settings (how far out QUOTE_WIDE and WIDEN sit, how far the inventory skew
 moves prices) were added after paper runs. See SKILL.md, "How orders are
 placed".
