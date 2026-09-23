@@ -412,6 +412,13 @@ def run(
                 "action_reason": action.reason if action else "block deadline exceeded",
                 "direction_leg": action.direction_leg if action else None,
                 "skew": action.skew if action else 0.0,
+                # which of our quotes rest on the book after this tick; the
+                # dashboard labels ticks from this and the position change,
+                # not from skew (which made every quoting tick read "BUY")
+                "quoted": "/".join(
+                    k for k in ("bid", "ask") if k in (resting_quotes or {})
+                )
+                or None,
                 "rung": rung.value,
                 "late": rung == Rung.HOLD_LATE,
                 "latency_ms": meta.get("latency_ms"),
@@ -725,6 +732,7 @@ def _closed_market_record(block: int, now: float, symbol: str) -> dict:
         "action_reason": "market closed, prices are stale",
         "direction_leg": None,
         "skew": 0.0,
+        "quoted": None,
         "rung": "hold_late",
         "late": False,
         "latency_ms": None,

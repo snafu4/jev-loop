@@ -442,6 +442,23 @@ def test_dashboard_feed_carries_run_totals_not_window_counts(wired, monkeypatch)
     assert stats["late_total"] == 0
 
 
+def test_each_tick_records_which_quotes_rest(wired):
+    # The dashboard labels ticks from this field (and the position change),
+    # not from skew, which made every quoting tick read "BUY".
+    import json as _json
+
+    wired(FakeAlpaca(position_qty=0.0003))  # ~$26 held: both sides backed
+    loop.run("BTC/USD", ticks=2, mock=False, limits=Limits(tick_seconds=0.0))
+    records = [_json.loads(l) for l in loop.LOG_FILE.read_text().splitlines()]
+    assert [r["quoted"] for r in records] == ["bid/ask", "bid/ask"]
+
+    wired(FakeAlpaca())  # flat: nothing to sell
+    loop.LOG_FILE.unlink()
+    loop.run("BTC/USD", ticks=1, mock=False, limits=Limits(tick_seconds=0.0))
+    record = _json.loads(loop.LOG_FILE.read_text().splitlines()[0])
+    assert record["quoted"] == "bid"
+
+
 def test_run_kills_and_flattens_an_oversized_broker_position(wired):
     fake = wired(FakeAlpaca(position_qty=0.0025))  # ~$215 vs a $50 cap
     rc = loop.run("BTC/USD", ticks=10, mock=False, limits=Limits(tick_seconds=0.0))

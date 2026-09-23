@@ -18,7 +18,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%}
   tick <b id="b">—</b><br>
   last <b id="ms">—</b> · seven judgments · one call<br>
   decisions <b id="n">0</b> · <span id="mode">paper mode</span><br>
-  <span style="color:#5cf07a">green line = buying</span> · <span style="color:#ff5f5f">red line = selling</span>
+  <span style="color:rgba(255,255,255,.85)">white = quoting</span> · <span style="color:#5cf07a">green = bought</span> · <span style="color:#ff5f5f">red = sold</span>
 </div>
 <canvas id="c"></canvas>
 <script>
@@ -33,12 +33,16 @@ const pts=[],sides=[],marks=[],pulses=[];let bigWord=null,band=null;
 
 function y(p){ if(lo===null||hi===null) return (TOP+BOT)/2; return TOP+(BOT-TOP)*(1-(p-lo)/Math.max(hi-lo,1e-6)); }
 
-function sideOf(t){
-  if(t.late || t.action==='HOLD_LATE') return 'late';
-  if(t.direction_leg==='up') return 'buy';
-  if(t.direction_leg==='down') return 'sell';
-  if(t.action==='PULL_QUOTES'||t.action==='STAND_DOWN') return 'late';
-  return (t.skew||0) < 0 ? 'sell' : 'buy';
+// Same classification as index.html: from logged facts, not skew.
+function sideOf(t,prev){
+  if(t.late || t.action==='HOLD_LATE' || t.action==='MARKET_CLOSED') return 'late';
+  if(['PULL_QUOTES','STAND_DOWN','KILL'].includes(t.action)) return 'late';
+  if(t.fill_qty && t.direction_leg==='up') return 'buy';
+  if(t.fill_qty && t.direction_leg==='down') return 'sell';
+  const dq=(prev&&prev.inventory!=null&&t.inventory!=null)?t.inventory-prev.inventory:0;
+  if(dq>1e-12) return 'buy';
+  if(dq<-1e-12) return 'sell';
+  return 'quote';
 }
 
 async function poll(){
@@ -61,16 +65,17 @@ function ingest(data){
   if(prices.length){ lo=Math.min(...prices); hi=Math.max(...prices); const pad=(hi-lo)*0.1||hi*0.001; lo-=pad; hi+=pad; }
 
   pts.length=0; sides.length=0;
-  for(const t of ticks){ pts.push(t.mid); sides.push(sideOf(t)); }
+  ticks.forEach((t,i)=>{ pts.push(t.mid); sides.push(sideOf(t,ticks[i-1])); });
 
   const t=ticks[ticks.length-1];
   if(t.tick===lastTick) return;
   lastTick=t.tick;
 
-  const side=sideOf(t);
+  const side=sideOf(t,ticks[ticks.length-2]);
   const conf = t.quote_environment_conf!=null? t.quote_environment_conf : (t.regime_conf||0.5);
-  document.getElementById('s').textContent=(side==='late'?(t.action||'HOLD'):side.toUpperCase())+' '+Math.round(conf*100)+'%';
-  document.getElementById('s').style.color= side==='buy'?'#5cf07a':side==='sell'?'#ff5f5f':'#ffd166';
+  const word={buy:'BOUGHT',sell:'SOLD',quote:'QUOTING'}[side]||(t.action||'HOLD');
+  document.getElementById('s').textContent=word+' '+Math.round(conf*100)+'%';
+  document.getElementById('s').style.color= side==='buy'?'#5cf07a':side==='sell'?'#ff5f5f':side==='quote'?'#6cb8ff':'#ffd166';
   document.getElementById('b').textContent=t.tick.toLocaleString();
   document.getElementById('ms').textContent=t.latency_ms? Math.round(t.latency_ms)+' ms':'late';
   const st=data.stats||{};
@@ -87,7 +92,7 @@ function ingest(data){
 
 function draw(){
   ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,innerWidth,innerHeight);
-  if(band){band.a-=.035;if(band.a>0){ctx.fillStyle=(band.side==='buy'?'rgba(92,240,122,':band.side==='sell'?'rgba(255,80,80,':'rgba(255,209,102,')+(band.a*.22)+')';ctx.fillRect(RIGHT-140,TOP,140,BOT-TOP)}}
+  if(band){band.a-=.035;if(band.a>0){ctx.fillStyle=(band.side==='buy'?'rgba(92,240,122,':band.side==='sell'?'rgba(255,80,80,':band.side==='quote'?'rgba(108,184,255,':'rgba(255,209,102,')+(band.a*.22)+')';ctx.fillRect(RIGHT-140,TOP,140,BOT-TOP)}}
   ctx.strokeStyle='rgba(255,255,255,.07)';ctx.setLineDash([2,6]);ctx.lineWidth=1;
   if(lo!==null){
     for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4,yy=y(v);ctx.beginPath();ctx.moveTo(LEFT,yy);ctx.lineTo(RIGHT,yy);ctx.stroke();ctx.fillStyle='rgba(255,255,255,.6)';ctx.font='12px "Fragment Mono",monospace';ctx.fillText(v.toFixed(1),RIGHT+14,yy+4)}

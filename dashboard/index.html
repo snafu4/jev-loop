@@ -503,6 +503,24 @@
           transform: none;
         }
       }
+      .act.quote {
+        color: #0763b8;
+      }
+      .strip i.quote {
+        background: #9cc8f0;
+      }
+      .side.quote .word {
+        color: #0763b8;
+      }
+      .side.quote .flash {
+        background: var(--blue-soft);
+      }
+      .feed tr.quote td {
+        background: var(--blue-soft);
+      }
+      .feed tr.quote td.a {
+        color: #0763b8;
+      }
     </style>
   </head>
   <body>
@@ -547,7 +565,7 @@
           <div class="strip" id="strip"></div>
           <div class="foot">
             <span
-              >last 90 ticks · one dot per tick · green buy · red sell · amber late/hold</span
+              >last 90 ticks · one dot per tick · blue quoting · green bought · red sold · amber late/hold</span
             ><span id="cadence">— s ticks · one decision per tick</span>
           </div>
         </section>
@@ -602,13 +620,33 @@
         strip.appendChild(document.createElement("i"));
       let lastTick = -1;
 
-      function sideOf(t) {
-        if (t.late || t.action === "HOLD_LATE") return "late";
-        if (t.direction_leg === "up") return "buy";
-        if (t.direction_leg === "down") return "sell";
-        if (t.action === "PULL_QUOTES" || t.action === "STAND_DOWN")
-          return "late";
-        return (t.skew || 0) < 0 ? "sell" : "buy"; // quoting with no leg: colour by skew direction
+      // What a tick actually did, from logged facts rather than guesses:
+      //   late / held / closed          -> amber
+      //   a directional leg that filled -> BUY / SELL
+      //   the broker position moved     -> FILLED BUY / FILLED SELL (a quote filled)
+      //   otherwise, the quotes resting -> QUOTE BOTH / BID / ASK (neutral blue)
+      // The old version coloured every quoting tick by inventory skew, which
+      // is 0 most of the time, so every tick read "BUY".
+      function classify(t, prev) {
+        if (t.late || t.action === "HOLD_LATE")
+          return { side: "late", label: "LATE" };
+        if (t.action === "MARKET_CLOSED")
+          return { side: "late", label: "CLOSED" };
+        if (["PULL_QUOTES", "STAND_DOWN", "KILL"].includes(t.action))
+          return { side: "late", label: t.action.replace("_", " ") };
+        if (t.fill_qty && t.direction_leg === "up")
+          return { side: "buy", label: "BUY" };
+        if (t.fill_qty && t.direction_leg === "down")
+          return { side: "sell", label: "SELL" };
+        const dq = prev && prev.inventory != null && t.inventory != null
+          ? t.inventory - prev.inventory : 0;
+        if (dq > 1e-12) return { side: "buy", label: "FILLED BUY" };
+        if (dq < -1e-12) return { side: "sell", label: "FILLED SELL" };
+        if (t.quoted === "bid/ask") return { side: "quote", label: "QUOTE BOTH" };
+        if (t.quoted === "bid") return { side: "quote", label: "QUOTE BID" };
+        if (t.quoted === "ask") return { side: "quote", label: "QUOTE ASK" };
+        if (t.quoted === undefined) return { side: "quote", label: "QUOTE" }; // older logs
+        return { side: "quote", label: "NO QUOTES" };
       }
 
       async function poll() {
@@ -690,7 +728,7 @@
           (t.spread_bps != null ? t.spread_bps.toFixed(1) : "—") +
           " bps";
 
-        const side = sideOf(t);
+        const { side, label } = classify(t, ticks[ticks.length - 2]);
         const a = $("act");
         a.textContent =
           t.action + (t.direction_leg ? ` (${t.direction_leg} leg)` : "");
@@ -715,12 +753,6 @@
         const sideEl = $("side"),
           word = $("word");
         sideEl.className = "card side " + side;
-        const label =
-          side === "late"
-            ? t.action === "HOLD_LATE"
-              ? "LATE"
-              : t.action
-            : side.toUpperCase();
         if (word.textContent !== label) {
           word.textContent = label;
           word.classList.remove("flip");
@@ -750,7 +782,9 @@
           t.toxic_flow != null ? t.toxic_flow.toFixed(2) : "—";
 
         hist.length = 0;
-        for (const row of ticks) hist.push({ px: row.mid, side: sideOf(row) });
+        ticks.forEach((row, i) =>
+          hist.push({ px: row.mid, side: classify(row, ticks[i - 1]).side }),
+        );
         const bars = strip.children;
         for (let i = 0; i < N; i++) {
           const h = hist[hist.length - N + i];
@@ -796,7 +830,7 @@
         const last = pts[pts.length - 1],
           lx = X(N - 1),
           ly = Y(last.px),
-          col = { buy: "#1f7a4d", sell: "#b91c1c", late: "#b7791f" };
+          col = { buy: "#1f7a4d", sell: "#b91c1c", late: "#b7791f", quote: "#0a8cff" };
         const grid = [0, 1, 2, 3]
           .map((k) => {
             const v = lo + (span * k) / 3,
