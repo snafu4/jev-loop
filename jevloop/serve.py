@@ -29,6 +29,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         candidate = DASHBOARD_DIR / path.lstrip("/")
         return str(candidate)
 
+    def end_headers(self) -> None:
+        # Always revalidate: without this a browser can keep running an old
+        # copy of the dashboard's code after it changes (the page only
+        # re-fetches latest.json, never itself), which kept showing the old
+        # all-"BUY" labels after they were fixed.
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+        super().end_headers()
+
     def log_message(self, format, *args):  # noqa: A002
         pass
 
