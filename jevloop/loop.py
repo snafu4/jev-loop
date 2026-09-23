@@ -907,7 +907,14 @@ def _execute_action(
             or shape_changed
         ):
             if dry:
-                resting_quotes = {"bid": bid_px, "ask": ask_px, "kind": action.kind}
+                # record only the sides that would really be placed, so the
+                # dashboard labels a dry run the same way as a live one
+                would = {
+                    k: v
+                    for k, v, ok in (("bid", bid_px, quote_buy), ("ask", ask_px, quote_sell))
+                    if ok
+                }
+                resting_quotes = {**would, "kind": action.kind} if would else None
                 rest_counter = 0
                 quote_txt = (
                     f"dry: would quote {sides_txt} {buy_qty}/{sell_qty} "

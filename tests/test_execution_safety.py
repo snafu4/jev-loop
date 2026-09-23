@@ -459,6 +459,18 @@ def test_each_tick_records_which_quotes_rest(wired):
     assert record["quoted"] == "bid"
 
 
+def test_dry_run_records_only_the_sides_it_would_place(wired):
+    import json as _json
+
+    fake = wired(FakeAlpaca())  # flat: a live run would quote the bid only
+    loop.run(
+        "BTC/USD", ticks=1, mock=False, limits=Limits(tick_seconds=0.0), dry_execution=True
+    )
+    record = _json.loads(loop.LOG_FILE.read_text().splitlines()[0])
+    assert record["quoted"] == "bid"  # was "bid/ask" in dry runs
+    assert fake.limit_orders == []  # and still nothing sent
+
+
 def test_run_kills_and_flattens_an_oversized_broker_position(wired):
     fake = wired(FakeAlpaca(position_qty=0.0025))  # ~$215 vs a $50 cap
     rc = loop.run("BTC/USD", ticks=10, mock=False, limits=Limits(tick_seconds=0.0))
