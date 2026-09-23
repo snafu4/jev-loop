@@ -45,7 +45,17 @@ class DecisionClientError(Exception):
     pass
 
 
-def _post_with_retry(url: str, headers: dict, body: dict, timeout: float) -> dict:
+def _post_with_retry(
+    url: str,
+    headers: dict,
+    body: dict,
+    timeout: float,
+    session: "requests.Session | None" = None,
+) -> dict:
+    """POST with retry inside the block deadline. Pass the client's own
+    `session` so every call reuses one kept-alive connection instead of
+    paying a fresh TCP + TLS handshake each tick."""
+    http = session or requests
     deadline = time.monotonic() + timeout
     attempt = 0
     last_exc: Exception | None = None
@@ -56,7 +66,7 @@ def _post_with_retry(url: str, headers: dict, body: dict, timeout: float) -> dic
                 "block deadline exceeded before a request could be sent"
             )
         try:
-            resp = requests.post(
+            resp = http.post(
                 url, headers=headers, json=body, timeout=min(remaining, timeout)
             )
         except requests.RequestException as exc:
@@ -114,6 +124,7 @@ class TypeSafeDirectClient(BaseDecisionClient):
     def __init__(self, api_key: str, model: str = "jev-latest"):
         super().__init__(name="TypeSafe direct", model=model)
         self._api_key = api_key
+        self._session = requests.Session()
 
     def ask(self, state: dict, questions: dict, timeout: float) -> tuple[dict, dict]:
         t0 = time.monotonic()
@@ -122,7 +133,7 @@ class TypeSafeDirectClient(BaseDecisionClient):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        data = _post_with_retry(TYPESAFE_DIRECT_URL, headers, body, timeout)
+        data = _post_with_retry(TYPESAFE_DIRECT_URL, headers, body, timeout, self._session)
         latency_ms = (time.monotonic() - t0) * 1000
         meta = {
             "route": self.name,
@@ -137,6 +148,7 @@ class GatewayClient(BaseDecisionClient):
     def __init__(self, api_key: str, model: str = "typesafe-ai/jev"):
         super().__init__(name="Vercel AI Gateway", model=model)
         self._api_key = api_key
+        self._session = requests.Session()
 
     def ask(self, state: dict, questions: dict, timeout: float) -> tuple[dict, dict]:
         t0 = time.monotonic()
@@ -145,7 +157,7 @@ class GatewayClient(BaseDecisionClient):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        data = _post_with_retry(GATEWAY_URL, headers, body, timeout)
+        data = _post_with_retry(GATEWAY_URL, headers, body, timeout, self._session)
         latency_ms = (time.monotonic() - t0) * 1000
         meta = {
             "route": self.name,

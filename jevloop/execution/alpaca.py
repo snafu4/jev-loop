@@ -181,14 +181,18 @@ class AlpacaPaperClient:
             "APCA-API-SECRET-KEY": secret_key,
         }
         self._limiter = RateLimiter(calls_per_minute)
+        # One pooled, kept-alive connection per host for the life of the
+        # client. A new connection per call cost ~240 ms vs ~26 ms reused
+        # (3 calls/tick), made ~40% of ticks late after ~2 hours, and
+        # crashed a 6-hour run with WinError 10055 (socket buffers exhausted).
+        self._session = requests.Session()
+        self._session.headers.update(self._headers)
         self._clock_cache: tuple[float, dict] | None = None
 
     # -- low-level HTTP -----------------------------------------------
     def _request(self, method: str, url: str, **kwargs) -> dict:
         self._limiter.wait()
-        resp = requests.request(
-            method, url, headers=self._headers, timeout=10, **kwargs
-        )
+        resp = self._session.request(method, url, timeout=10, **kwargs)
         if resp.status_code == 401:
             raise AlpacaAPIError(
                 401,

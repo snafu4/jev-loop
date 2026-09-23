@@ -141,6 +141,11 @@ Code in `jevloop/loop.py`, never Jev, and all of it runs after `risk.py`:
   `max_alpaca_calls_per_minute` (150). Alpaca allows 200/min per account
   for trading and 200/min for market data, counted separately. A tick uses
   about 4 calls, so 2s ticks need about 120/min.
+- **Reused connections.** The Alpaca client and the Jev client each hold
+  one `requests.Session`, so calls reuse a kept-alive connection. A new
+  connection per call measured ~240 ms against ~26 ms reused; before this,
+  ~40% of ticks ran late after two hours and a six-hour run crashed with
+  `WinError 10055` (Windows socket buffers exhausted).
 
 ## What each file does
 
