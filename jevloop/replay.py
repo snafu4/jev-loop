@@ -30,7 +30,7 @@ from pathlib import Path
 from .battery import build_questions_v2, validate_answers
 from .client import DecisionClientError, resolve_decision_client
 from .history import LOG_DIR, load_bars
-from .state_v2 import MOVE_PCT, build_state_v2, label_outcome
+from .state_v2 import HISTORY_DAYS_NEEDED, MOVE_PCT, STATE_BUILDERS, label_outcome
 
 REPLAY_DIR = LOG_DIR / "replay"
 ROUND_TRIP_TAKER_PCT = 0.50  # Alpaca crypto, lowest tier: 0.25% each way
@@ -77,6 +77,13 @@ def run_replay(args) -> Path:
     first_day = today - dt.timedelta(days=args.days)
     holdout_start = int(dt.datetime.combine(today - dt.timedelta(days=args.holdout_days), dt.time(), tzinfo=dt.UTC).timestamp())
     times = sample_times(first_day, today, args.every, holdout_start, args.include_holdout)
+    if args.same_times_as:
+        # score exactly the decision points another variant answered, for a
+        # like-for-like comparison
+        ref = REPLAY_DIR / f"{args.same_times_as}.jsonl"
+        times = sorted({json.loads(l)["t"] for l in ref.read_text().splitlines() if l.strip()})
+        if not args.include_holdout:
+            times = [x for x in times if x < holdout_start]
 
     out_path = REPLAY_DIR / f"{args.variant}.jsonl"
     REPLAY_DIR.mkdir(parents=True, exist_ok=True)
@@ -87,7 +94,7 @@ def run_replay(args) -> Path:
     if args.max_calls is not None:
         todo = todo[: args.max_calls]
 
-    print(f"replay '{args.variant}': {len(times)} decision points "
+    print(f"replay '{args.variant}' (state {args.state}): {len(times)} decision points "
           f"({first_day} .. {today}, every {args.every} min, "
           f"{'including' if args.include_holdout else 'excluding'} the last {args.holdout_days} days), "
           f"{len(done)} already done, {len(todo)} to run = {len(todo)} Jev calls")
@@ -95,8 +102,13 @@ def run_replay(args) -> Path:
         return out_path
 
     print("loading history (cached per day)...")
-    coinbase = load_bars("coinbase", first_day, today)
-    alpaca = load_bars("alpaca", first_day, today)
+    extra = HISTORY_DAYS_NEEDED[args.state]
+    earliest = dt.datetime.fromtimestamp(min(todo), dt.UTC).date() - dt.timedelta(days=extra)
+    coinbase = load_bars("coinbase", min(first_day, earliest), today)
+    # from the day before the earliest decision: its entry price is the last
+    # Alpaca close before t, which can fall on the previous day
+    alpaca_from = dt.datetime.fromtimestamp(min(todo), dt.UTC).date() - dt.timedelta(days=1)
+    alpaca = load_bars("alpaca", min(first_day, alpaca_from), today)
 
     client = resolve_decision_client(mock=args.mock)
     questions = build_questions_v2()
@@ -104,7 +116,7 @@ def run_replay(args) -> Path:
     errors_in_a_row = skipped = written = 0
     with out_path.open("a") as f:
         for i, t in enumerate(todo, 1):
-            state = build_state_v2(coinbase, alpaca, t)
+            state = STATE_BUILDERS[args.state](coinbase, alpaca, t)
             outcome = label_outcome(alpaca, t)
             if state is None or outcome is None:
                 skipped += 1
@@ -254,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-calls", type=int, default=None, help="cap Jev calls this run")
     parser.add_argument("--mock", action="store_true", help="uninformative fake answers, no Jev calls")
     parser.add_argument("--score-only", action="store_true", help="score the results file, no Jev calls")
+    parser.add_argument("--state", choices=sorted(STATE_BUILDERS), default="v2", help="which state to send Jev")
+    parser.add_argument("--same-times-as", default=None, help="use exactly the decision points of this variant")
     args = parser.parse_args(argv)
 
     today = dt.datetime.now(dt.UTC).date()

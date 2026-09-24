@@ -10,6 +10,10 @@ zeros. v2 is all market context, computed in code (the split holds):
 - volume in the last hour against the 24h hourly average,
 - the gap between Alpaca's price (the venue) and Coinbase's (the market).
 
+State v3 adds the price path itself (build_state_v3): the last 24h as 96
+15-minute returns and the last 30 days as daily returns, so Jev can judge
+the shape of the move rather than 14 summary numbers.
+
 No absolute prices and no timestamps: Jev must not be able to recognise a
 date or price level from its training data and "remember" what came next.
 
@@ -111,6 +115,55 @@ def build_state_v2(coinbase: Bars, alpaca: Bars, t: int) -> dict | None:
         else None,
         "alpaca_vs_coinbase_price_pct": r(_pct(now, last_alpaca)),
     }
+
+
+PATH_15M_STEPS = 96  # 24h of 15-minute returns
+PATH_DAILY_STEPS = 30  # 30 days of daily returns
+
+
+def _close_at(bars: Bars, t: int, tolerance_bars: int = 5) -> float | None:
+    """Close of the last bar that closed at or before t (bar keyed t-60),
+    looking back up to tolerance_bars for a gap."""
+    for k in range(t - MIN, t - (tolerance_bars + 1) * MIN, -MIN):
+        if k in bars:
+            return bars[k][3]
+    return None
+
+
+def _path(bars: Bars, t: int, step_bars: int, steps: int) -> list[float] | None:
+    """`steps` consecutive returns (%) ending at t, each over `step_bars`
+    minutes, oldest first. None if any anchor price is missing."""
+    anchors = []
+    for i in range(steps, -1, -1):
+        p = _close_at(bars, t - i * step_bars * MIN)
+        if p is None:
+            return None
+        anchors.append(p)
+    return [round(_pct(a, b), 3) for a, b in zip(anchors, anchors[1:])]
+
+
+def build_state_v3(coinbase: Bars, alpaca: Bars, t: int) -> dict | None:
+    """State v2 plus the price path itself, so Jev sees the shape of the move
+    and not only 14 summary numbers: the last 24h as 96 fifteen-minute
+    returns and the last 30 days as daily returns, both oldest first, in
+    percent. Still no prices or timestamps. Needs 30 days of Coinbase
+    history before t."""
+    state = build_state_v2(coinbase, alpaca, t)
+    if state is None:
+        return None
+    path_15m = _path(coinbase, t, 15, PATH_15M_STEPS)
+    path_daily = _path(coinbase, t, DAY_BARS, PATH_DAILY_STEPS)
+    if path_15m is None or path_daily is None:
+        return None
+    return {
+        **state,
+        "returns_15m_last_24h_pct_oldest_first": path_15m,
+        "returns_daily_last_30d_pct_oldest_first": path_daily,
+    }
+
+
+STATE_BUILDERS = {"v2": build_state_v2, "v3": build_state_v3}
+HISTORY_DAYS_NEEDED = {"v2": 1, "v3": PATH_DAILY_STEPS + 1}
 
 
 MAX_MISSING_OUTCOME_BARS = 6  # of 60; Alpaca omits minutes with no activity

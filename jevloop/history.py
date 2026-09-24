@@ -65,7 +65,9 @@ def _fetch_alpaca_day(day: dt.date, session: requests.Session) -> Bars:
 
 def _fetch_coinbase_day(day: dt.date, session: requests.Session) -> Bars:
     start = dt.datetime.combine(day, dt.time(), tzinfo=dt.UTC)
-    end = start + dt.timedelta(days=1)
+    # Coinbase rejects an end in the future (400), so today stops at now
+    now = dt.datetime.now(dt.UTC).replace(second=0, microsecond=0)
+    end = min(start + dt.timedelta(days=1), now)
     bars: Bars = {}
     s = start
     while s < end:  # at most 300 candles per request

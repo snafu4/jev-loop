@@ -10,7 +10,7 @@ import pytest
 
 from jevloop import replay, state_v2
 from jevloop.battery import build_questions_v2
-from jevloop.state_v2 import build_state_v2, label_outcome
+from jevloop.state_v2 import build_state_v2, build_state_v3, label_outcome
 
 T0 = int(dt.datetime(2026, 9, 1, tzinfo=dt.UTC).timestamp())
 DAY = 86400
@@ -148,7 +148,7 @@ def test_replay_writes_samples_and_resumes_without_repeating(tmp_path, monkeypat
     monkeypatch.setattr(replay, "REPLAY_DIR", tmp_path)
     monkeypatch.setattr(replay, "load_bars", lambda source, a, b, verbose=True: cb if source == "coinbase" else alp)
     args = types.SimpleNamespace(days=4, every=180, holdout_days=1, include_holdout=False,
-                                 variant="t", max_calls=3, mock=True)
+                                 variant="t", max_calls=3, mock=True, state="v2", same_times_as=None)
     path = replay.run_replay(args)
     first = [json.loads(l)["t"] for l in path.read_text().splitlines()]
     assert len(first) == 3
@@ -158,3 +158,49 @@ def test_replay_writes_samples_and_resumes_without_repeating(tmp_path, monkeypat
     assert len(all_t) == len(set(all_t))  # nothing repeated
     assert all_t[:3] == first
     assert replay.score(path, holdout_start=None)  # scoring runs end to end
+
+
+# -- state v3: the price path ------------------------------------------------------
+
+
+def test_v3_adds_the_price_path_oldest_first():
+    cb = _bars(T0, 32 * 1440, step=0.00001)  # slow steady rise
+    alp = _bars(T0, 32 * 1440, price=79_900.0)
+    t = T0 + 31 * DAY
+    s = build_state_v3(cb, alp, t)
+    assert len(s["returns_15m_last_24h_pct_oldest_first"]) == 96
+    assert len(s["returns_daily_last_30d_pct_oldest_first"]) == 30
+    assert s["returns_daily_last_30d_pct_oldest_first"][-1] > 0  # rising
+    assert all(abs(v) < 100 for v in s["returns_15m_last_24h_pct_oldest_first"])  # percents, not prices
+    # every v2 field is still there
+    assert set(build_state_v2(cb, alp, t)) <= set(s)
+
+
+def test_v3_does_not_look_ahead():
+    cb = _bars(T0, 33 * 1440)
+    alp = _bars(T0, 33 * 1440, price=79_900.0)
+    t = T0 + 31 * DAY
+    before = build_state_v3(cb, alp, t)
+    for k in range(t, T0 + 33 * 1440 * 60, 60):
+        cb[k] = (1.0, 1.0, 1.0, 1.0, 999.0)
+    assert build_state_v3(cb, alp, t) == before
+
+
+def test_v3_needs_30_days_of_history():
+    cb = _bars(T0, 10 * 1440)
+    assert build_state_v3(cb, cb, T0 + 5 * DAY) is None
+
+
+def test_same_times_as_reuses_another_variants_decision_points(tmp_path, monkeypatch):
+    today = dt.datetime.now(dt.UTC).date()
+    start = int(dt.datetime.combine(today - dt.timedelta(days=4), dt.time(), tzinfo=dt.UTC).timestamp())
+    cb = _bars(start, 5 * 1440)
+    alp = _bars(start, 5 * 1440, price=79_900.0)
+    monkeypatch.setattr(replay, "REPLAY_DIR", tmp_path)
+    monkeypatch.setattr(replay, "load_bars", lambda source, a, b, verbose=True: cb if source == "coinbase" else alp)
+    ref_times = [start + DAY + 3600 * k for k in (1, 5, 9)]
+    (tmp_path / "ref.jsonl").write_text("".join(json.dumps({"t": x}) + "\n" for x in ref_times))
+    args = types.SimpleNamespace(days=4, every=60, holdout_days=1, include_holdout=False,
+                                 variant="same", max_calls=None, mock=True, state="v2", same_times_as="ref")
+    path = replay.run_replay(args)
+    assert sorted(json.loads(l)["t"] for l in path.read_text().splitlines()) == ref_times

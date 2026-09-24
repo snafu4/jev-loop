@@ -120,6 +120,12 @@ hour. About 530 decision points cost about 530 Jev calls.
 - **Baselines:** every Jev score is printed next to free code signals
   (momentum, the Alpaca-Coinbase price gap, trailing volatility). Jev adds
   value only if it beats them.
+- **States:** `--state v2` (default) sends 14 summary numbers (~134
+  tokens). `--state v3` adds the price path itself: the last 24h as 96
+  fifteen-minute returns and the last 30 days as daily returns, oldest
+  first (~386 tokens; needs 30 extra days of history, downloaded once).
+  `--same-times-as v2` asks about exactly the hours another variant was
+  scored on, so two variants compare like for like.
 - **Resumable:** answers are saved to `~/.jev-loop/replay/<variant>.jsonl`
   as they arrive; rerunning skips what is done. History is cached per day
   in `~/.jev-loop/history/`.
@@ -131,6 +137,12 @@ AUC 0.46, both no better than chance; P(up) Brier skill -0.38. Big-move AUC
 P(up) >= 0.4/0.5/0.6 and holding an hour lost about as much after fees as
 buying every hour (-0.44% to -0.52% per trade). Consistent with the live
 calibration run: Jev's answers here add nothing that code does not.
+
+**Result, variant `v3` (same 455 hours, price path added):** Jev's answers
+barely moved: its P(up) correlated 0.97 with v2's. Direction AUC 0.48
+(v2 0.49), first-touch 0.50 (v2 0.46), both still chance; big-move 0.58
+(v2 0.55), still well below free trailing volatility (0.67). Trades after
+fees: -0.50% to -0.51% per trade, same as buying every hour.
 
 ## Fees (why this strategy loses money)
 
