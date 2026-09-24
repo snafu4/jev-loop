@@ -72,13 +72,19 @@ def _range_position(closes: list[float]) -> float:
     return 0.5 if hi == lo else (closes[-1] - lo) / (hi - lo)
 
 
-def build_state_v2(coinbase: Bars, alpaca: Bars, t: int) -> dict | None:
+BTC_DESC = "BTC/USD. Prices and volume from Coinbase; the loop trades on Alpaca."
+
+
+def build_state_v2(coinbase: Bars, alpaca: Bars, t: int, desc: str = BTC_DESC, venue_gap: bool = True) -> dict | None:
     """Market-context state at decision minute t (epoch seconds, minute
-    aligned). None when the 24h of history it needs is incomplete."""
+    aligned). None when the 24h of history it needs is incomplete.
+
+    `coinbase` is the market the state is built from, `alpaca` the venue.
+    venue_gap=False (e.g. forex, one data source) leaves out the gap field."""
     day = _closes(coinbase, t, DAY_BARS)
     if day is None:
         return None
-    last_alpaca = _entry_price(alpaca, t)  # last Alpaca close in the 5 minutes before t
+    last_alpaca = _entry_price(alpaca, t)  # last venue close in the 5 minutes before t
     if last_alpaca is None:
         return None
     now = day[-1]
@@ -96,8 +102,8 @@ def build_state_v2(coinbase: Bars, alpaca: Bars, t: int) -> dict | None:
     last_hour_volume = sum(vols[-HOUR_BARS:])
 
     r = lambda x: round(x, 3)  # noqa: E731
-    return {
-        "market": "BTC/USD. Prices and volume from Coinbase; the loop trades on Alpaca.",
+    state = {
+        "market": desc,
         "return_15m_pct": r(_pct(day[-16], now)),
         "return_1h_pct": r(_pct(day[-HOUR_BARS - 1], now)),
         "return_4h_pct": r(_pct(day[-4 * HOUR_BARS - 1], now)),
@@ -115,6 +121,9 @@ def build_state_v2(coinbase: Bars, alpaca: Bars, t: int) -> dict | None:
         else None,
         "alpaca_vs_coinbase_price_pct": r(_pct(now, last_alpaca)),
     }
+    if not venue_gap:
+        del state["alpaca_vs_coinbase_price_pct"]
+    return state
 
 
 PATH_15M_STEPS = 96  # 24h of 15-minute returns
@@ -130,29 +139,32 @@ def _close_at(bars: Bars, t: int, tolerance_bars: int = 5) -> float | None:
     return None
 
 
-def _path(bars: Bars, t: int, step_bars: int, steps: int) -> list[float] | None:
+def _path(bars: Bars, t: int, step_bars: int, steps: int, tolerance_bars: int = 5) -> list[float] | None:
     """`steps` consecutive returns (%) ending at t, each over `step_bars`
-    minutes, oldest first. None if any anchor price is missing."""
+    minutes, oldest first. Each anchor is the last close within
+    `tolerance_bars` before it; None if any anchor has none."""
     anchors = []
     for i in range(steps, -1, -1):
-        p = _close_at(bars, t - i * step_bars * MIN)
+        p = _close_at(bars, t - i * step_bars * MIN, tolerance_bars)
         if p is None:
             return None
         anchors.append(p)
     return [round(_pct(a, b), 3) for a, b in zip(anchors, anchors[1:])]
 
 
-def build_state_v3(coinbase: Bars, alpaca: Bars, t: int) -> dict | None:
+def build_state_v3(coinbase: Bars, alpaca: Bars, t: int, path_tolerance_bars: int = 5, **kw) -> dict | None:
     """State v2 plus the price path itself, so Jev sees the shape of the move
     and not only 14 summary numbers: the last 24h as 96 fifteen-minute
     returns and the last 30 days as daily returns, both oldest first, in
     percent. Still no prices or timestamps. Needs 30 days of Coinbase
-    history before t."""
-    state = build_state_v2(coinbase, alpaca, t)
+    history before t. path_tolerance_bars: how far back an anchor may look
+    for a close; forex uses 3 days so a weekend anchor takes Friday's close
+    (a 0% return for a day with no trading) instead of dropping the sample."""
+    state = build_state_v2(coinbase, alpaca, t, **kw)
     if state is None:
         return None
-    path_15m = _path(coinbase, t, 15, PATH_15M_STEPS)
-    path_daily = _path(coinbase, t, DAY_BARS, PATH_DAILY_STEPS)
+    path_15m = _path(coinbase, t, 15, PATH_15M_STEPS, path_tolerance_bars)
+    path_daily = _path(coinbase, t, DAY_BARS, PATH_DAILY_STEPS, path_tolerance_bars)
     if path_15m is None or path_daily is None:
         return None
     return {
@@ -177,7 +189,8 @@ def _entry_price(alpaca: Bars, t: int, lookback_bars: int = 5) -> float | None:
     return None
 
 
-def label_outcome(alpaca: Bars, t: int, horizon_bars: int = HOUR_BARS) -> dict | None:
+def label_outcome(alpaca: Bars, t: int, horizon_bars: int = HOUR_BARS,
+                  move_pct: float = MOVE_PCT, flat_pct: float = FLAT_PCT) -> dict | None:
     """What actually happened on Alpaca over [t, t + horizon), from the last
     Alpaca close before t.
 
@@ -192,7 +205,7 @@ def label_outcome(alpaca: Bars, t: int, horizon_bars: int = HOUR_BARS) -> dict |
     entry = _entry_price(alpaca, t)
     if entry is None:
         return None
-    up_px, dn_px = entry * (1 + MOVE_PCT / 100), entry * (1 - MOVE_PCT / 100)
+    up_px, dn_px = entry * (1 + move_pct / 100), entry * (1 - move_pct / 100)
     first = None
     last_close = entry
     missing = 0
@@ -216,7 +229,7 @@ def label_outcome(alpaca: Bars, t: int, horizon_bars: int = HOUR_BARS) -> dict |
     ret = _pct(entry, last_close)
     return {
         "return_1h_pct": round(ret, 4),
-        "direction_1h": "up" if ret > FLAT_PCT else "down" if ret < -FLAT_PCT else "flat",
+        "direction_1h": "up" if ret > flat_pct else "down" if ret < -flat_pct else "flat",
         "first_touch_1h": first or "neither",
         "big_move_1h": first is not None,
     }

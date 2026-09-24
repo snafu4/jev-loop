@@ -40,7 +40,8 @@ uv run python -m jevloop explain-split                 # the deterministic vs pr
 uv run python -m jevloop calibrate                     # Brier score + reliability table
 uv run python -m jevloop replay                        # score Jev on 30 days of history (see Testing Jev on history)
 uv run python -m jevloop replay --score-only           # re-score saved answers, no Jev calls
-uv run python -m jevloop phase1 --market btc|spy        # do derived indicators predict? (no Jev)
+uv run python -m jevloop phase1 --market btc|spy|eurusd # do derived indicators predict? (no Jev)
+uv run python -m jevloop replay --market eurusd --state v2|v3   # Jev on EURUSD history (Dukascopy)
 uv run python -m jevloop serve                         # dashboard at http://127.0.0.1:8765
 ```
 
@@ -145,6 +146,15 @@ barely moved: its P(up) correlated 0.97 with v2's. Direction AUC 0.48
 (v2 0.55), still well below free trailing volatility (0.67). Trades after
 fees: -0.50% to -0.51% per trade, same as buying every hour.
 
+**EURUSD replay (`--market eurusd`, 290 hourly samples 2026-08-26 .. 09-16,
+thresholds scaled to 0.1% / 0.05%, 0.02% cost):** same picture as BTC.
+Direction AUC 0.46 (v2) / 0.46 (v3), chance; first-touch had only 26
+decided hours (0.1% in an hour is rare for EURUSD), too few to judge;
+big-move AUC 0.67-0.68, above chance but far below free trailing 1h
+volatility (0.86). v3's price path changed nothing (P(up) correlation 0.98
+with v2). v2's 24-clock-hour history requirement skips early-Monday hours
+after the weekend, so Mondays are under-represented.
+
 ## Indicators without Jev (`jevloop phase1`)
 
 `uv run python -m jevloop phase1` tests whether indicators derived from
@@ -175,6 +185,14 @@ costs); gradient boosting long at P >= 0.55 over 13 bars made +0.070%,
 within noise of that. Shorts lost. So: BTC has a weak real 4h signal but
 costs 0.5% to trade; SPY costs ~0.02% to trade but these indicators find
 nothing in it.
+
+**EURUSD (`--market eurusd`: hourly Dukascopy candles since 2019, GBPUSD as
+the cross-asset, 24x5 so weekends are not filled, 0.02% round-trip cost;
+dev 2020-03 .. 2026-03):** at 4h the indicators clear chance only barely
+(logistic AUC 0.515, 95% 0.506-0.524; gradient boosting 0.514) and the
+before-cost edge is about 0.003% per trade against 0.02% costs; at 24h
+nothing (0.49-0.51). Alpaca offers no forex trading, so this is research
+only: trading EURUSD would need another broker.
 
 ## Fees (why this strategy loses money)
 

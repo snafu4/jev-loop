@@ -23,17 +23,28 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import json
 import random
 from pathlib import Path
 
 from .battery import build_questions_v2, validate_answers
 from .client import DecisionClientError, resolve_decision_client
-from .history import LOG_DIR, load_bars
-from .state_v2 import HISTORY_DAYS_NEEDED, MOVE_PCT, STATE_BUILDERS, label_outcome
+from .history import LOG_DIR, load_bars, load_fx_minutes
+from .state_v2 import BTC_DESC, HISTORY_DAYS_NEEDED, STATE_BUILDERS, label_outcome
 
 REPLAY_DIR = LOG_DIR / "replay"
-ROUND_TRIP_TAKER_PCT = 0.50  # Alpaca crypto, lowest tier: 0.25% each way
+
+# Per market: what the state says it is, the move thresholds in the
+# questions and outcomes (scaled to how much the market moves in an hour),
+# the round-trip cost in %, and whether there is a venue gap to report.
+MARKETS = {
+    "btc": {"desc": BTC_DESC, "move": 0.5, "flat": 0.25, "cost": 0.50, "venue_gap": True, "path_tolerance": 5},
+    # 24x5: v3's daily path looks back up to 3 days so weekend anchors use Friday's close
+    "eurusd": {"desc": "EUR/USD spot. Prices and tick volume from Dukascopy.",
+               "move": 0.1, "flat": 0.05, "cost": 0.02, "venue_gap": False, "path_tolerance": 3 * 1440},
+}
+ROUND_TRIP_TAKER_PCT = MARKETS["btc"]["cost"]
 
 
 # ------------------------------------------------------------ sampling ----
@@ -102,22 +113,38 @@ def run_replay(args) -> Path:
         return out_path
 
     print("loading history (cached per day)...")
+    market = MARKETS[getattr(args, "market", "btc")]
     extra = HISTORY_DAYS_NEEDED[args.state]
     earliest = dt.datetime.fromtimestamp(min(todo), dt.UTC).date() - dt.timedelta(days=extra)
-    coinbase = load_bars("coinbase", min(first_day, earliest), today)
-    # from the day before the earliest decision: its entry price is the last
-    # Alpaca close before t, which can fall on the previous day
-    alpaca_from = dt.datetime.fromtimestamp(min(todo), dt.UTC).date() - dt.timedelta(days=1)
-    alpaca = load_bars("alpaca", min(first_day, alpaca_from), today)
+    if getattr(args, "market", "btc") == "eurusd":
+        # one source: the state and the outcomes both come from Dukascopy
+        coinbase = alpaca = load_fx_minutes("EURUSD", min(first_day, earliest), today)
+    else:
+        coinbase = load_bars("coinbase", min(first_day, earliest), today)
+        # from the day before the earliest decision: its entry price is the last
+        # Alpaca close before t, which can fall on the previous day
+        alpaca_from = dt.datetime.fromtimestamp(min(todo), dt.UTC).date() - dt.timedelta(days=1)
+        alpaca = load_bars("alpaca", min(first_day, alpaca_from), today)
+    extra_kw = {"path_tolerance_bars": market["path_tolerance"]} if args.state == "v3" else {}
+    build_state = functools.partial(STATE_BUILDERS[args.state], desc=market["desc"], venue_gap=market["venue_gap"], **extra_kw)
 
+    # the skill's own .env, so a replay never needs `source .env` first
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     client = resolve_decision_client(mock=args.mock)
-    questions = build_questions_v2()
+    if client.name == "MOCK" and not args.mock:
+        # resolve_decision_client falls back to the mock when no key is set;
+        # scoring mock answers as if they were Jev's would be meaningless
+        raise SystemExit("no TYPESAFE_API_KEY or AI_GATEWAY_API_KEY found; refusing to replay on the mock "
+                         "(pass --mock to test the plumbing on purpose)")
+    questions = build_questions_v2(market["move"], market["flat"])
     rng = random.Random(0)
     errors_in_a_row = skipped = written = 0
     with out_path.open("a") as f:
         for i, t in enumerate(todo, 1):
-            state = STATE_BUILDERS[args.state](coinbase, alpaca, t)
-            outcome = label_outcome(alpaca, t)
+            state = build_state(coinbase, alpaca, t)
+            outcome = label_outcome(alpaca, t, move_pct=market["move"], flat_pct=market["flat"])
             if state is None or outcome is None:
                 skipped += 1
                 continue
@@ -196,7 +223,7 @@ def brier_skill(p: list[float], y: list[int]) -> float:
     return 1 - b / base if base else float("nan")
 
 
-def score(path: Path, holdout_start: int | None) -> dict:
+def score(path: Path, holdout_start: int | None, move_pct: float = 0.5, cost_pct: float = ROUND_TRIP_TAKER_PCT) -> dict:
     rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     if holdout_start is not None:
         rows = [r for r in rows if r["t"] < holdout_start]
@@ -218,14 +245,15 @@ def score(path: Path, holdout_start: int | None) -> dict:
     print(_row("Jev P(up)", p_up, went_up))
     print(_row("baseline: momentum (return_1h)", [S(r, "return_1h_pct") for r in rows], went_up))
     print(_row("baseline: momentum (return_24h)", [S(r, "return_24h_pct") for r in rows], went_up))
-    print(_row("baseline: Alpaca below Coinbase (-gap)", [-S(r, "alpaca_vs_coinbase_price_pct") for r in rows], went_up))
+    if all("alpaca_vs_coinbase_price_pct" in r["state"] for r in rows):
+        print(_row("baseline: Alpaca below Coinbase (-gap)", [-S(r, "alpaca_vs_coinbase_price_pct") for r in rows], went_up))
     print(f"  Jev P(up) Brier skill vs base rate: {brier_skill(p_up, went_up):+.3f} (> 0 beats the base rate)")
     out["direction_auc"] = auc(p_up, went_up)
 
     # --- first_touch_1h: which of +/-0.5% came first ---------------------
     decided = [r for r in rows if r["outcome"]["first_touch_1h"] in ("up_first", "down_first")]
     counts = {k: sum(1 for r in rows if r["outcome"]["first_touch_1h"] == k) for k in ("up_first", "down_first", "neither", "ambiguous")}
-    print(f"\nfirst_touch_1h: +{MOVE_PCT}% before -{MOVE_PCT}%?  outcomes {counts}")
+    print(f"\nfirst_touch_1h: +{move_pct:g}% before -{move_pct:g}%?  outcomes {counts}")
     if len(decided) >= 20:
         edge = [r["answers"]["first_touch_1h"]["probabilities"].get("up_first", 0) - r["answers"]["first_touch_1h"]["probabilities"].get("down_first", 0) for r in decided]
         up_first = [1 if r["outcome"]["first_touch_1h"] == "up_first" else 0 for r in decided]
@@ -237,18 +265,18 @@ def score(path: Path, holdout_start: int | None) -> dict:
 
     # --- big_move_1h: any 0.5% move within the hour ----------------------
     moved = [1 if r["outcome"]["big_move_1h"] else 0 for r in rows]
-    print(f"\nbig_move_1h: a {MOVE_PCT}% move either way within the hour?  (base rate {100 * sum(moved) / len(rows):.1f}%)")
+    print(f"\nbig_move_1h: a {move_pct:g}% move either way within the hour?  (base rate {100 * sum(moved) / len(rows):.1f}%)")
     print(_row("Jev P(big move)", [r["answers"]["big_move_1h"]["noul"] for r in rows], moved))
     print(_row("baseline: volatility_last_1h", [S(r, "volatility_last_1h_pct_per_hour") for r in rows], moved))
     print(_row("baseline: volatility_last_24h", [S(r, "volatility_last_24h_pct_per_hour") for r in rows], moved))
     out["big_move_auc"] = auc([r["answers"]["big_move_1h"]["noul"] for r in rows], moved)
 
     # --- what trading it would have made, after fees -----------------------
-    print(f"\ntrading it: buy, hold one hour, sell; {ROUND_TRIP_TAKER_PCT}% round-trip taker fees")
-    all_net = [r["outcome"]["return_1h_pct"] - ROUND_TRIP_TAKER_PCT for r in rows]
+    print(f"\ntrading it: buy, hold one hour, sell; {cost_pct:g}% round-trip cost")
+    all_net = [r["outcome"]["return_1h_pct"] - cost_pct for r in rows]
     print(f"  every hour (no filter)          n={len(rows):4d}  mean net {sum(all_net) / len(all_net):+.3f}% per trade")
     for thr in (0.4, 0.5, 0.6):
-        pick = [r["outcome"]["return_1h_pct"] - ROUND_TRIP_TAKER_PCT for r, p in zip(rows, p_up) if p >= thr]
+        pick = [r["outcome"]["return_1h_pct"] - cost_pct for r, p in zip(rows, p_up) if p >= thr]
         if pick:
             print(f"  only when Jev P(up) >= {thr:.1f}     n={len(pick):4d}  mean net {sum(pick) / len(pick):+.3f}% per trade")
         else:
@@ -262,13 +290,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--every", type=int, default=60, help="minutes between decision points")
     parser.add_argument("--holdout-days", type=int, default=7, help="most recent days kept out")
     parser.add_argument("--include-holdout", action="store_true", help="sample and score the held-out days too")
-    parser.add_argument("--variant", default="v2", help="results file name under ~/.jev-loop/replay/")
+    parser.add_argument("--market", choices=sorted(MARKETS), default="btc", help="btc (Coinbase/Alpaca) or eurusd (Dukascopy)")
+    parser.add_argument("--variant", default=None, help="results file name under ~/.jev-loop/replay/ (default: v2/v3 for btc, eurusd-v2/v3)")
     parser.add_argument("--max-calls", type=int, default=None, help="cap Jev calls this run")
     parser.add_argument("--mock", action="store_true", help="uninformative fake answers, no Jev calls")
     parser.add_argument("--score-only", action="store_true", help="score the results file, no Jev calls")
     parser.add_argument("--state", choices=sorted(STATE_BUILDERS), default="v2", help="which state to send Jev")
     parser.add_argument("--same-times-as", default=None, help="use exactly the decision points of this variant")
     args = parser.parse_args(argv)
+    if args.variant is None:
+        args.variant = args.state if args.market == "btc" else f"{args.market}-{args.state}"
+    market = MARKETS[args.market]
 
     today = dt.datetime.now(dt.UTC).date()
     holdout_start = int(dt.datetime.combine(today - dt.timedelta(days=args.holdout_days), dt.time(), tzinfo=dt.UTC).timestamp())
@@ -278,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     if not path.exists():
         print(f"no results at {path}")
         return 1
-    score(path, None if args.include_holdout else holdout_start)
+    score(path, None if args.include_holdout else holdout_start, move_pct=market["move"], cost_pct=market["cost"])
     return 0
 
 

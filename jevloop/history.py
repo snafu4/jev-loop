@@ -230,3 +230,112 @@ def load_stock_bars(symbol: str, start: dt.datetime, timeframe: str = "30Min", b
         if verbose:
             print(f"  {symbol} {timeframe}: +{len(bars) - n_before} regular-hours bars (cache now {len(bars)})")
     return {k: v for k, v in bars.items() if k >= start_ts}
+
+
+# ------------------------------------------ forex (Dukascopy, free) ----
+
+DUKASCOPY_URL = "https://datafeed.dukascopy.com/datafeed/{symbol}/{y}/{m0:02d}/{rest}"
+FX_POINT = {"EURUSD": 1e5, "GBPUSD": 1e5}  # prices are stored as integers in points
+
+
+def _parse_bi5(content: bytes, period_start: int, point: float) -> Bars:
+    """Dukascopy candle file: LZMA-compressed 24-byte big-endian records of
+    (seconds from period start, open, close, low, high as integer points,
+    volume as float32). Zero-volume records are the closed market (weekends,
+    holidays) and are dropped. Returned in this module's (o, h, l, c, v)."""
+    import lzma
+    import struct
+
+    if not content:
+        return {}
+    raw = lzma.decompress(content)
+    out: Bars = {}
+    for i in range(len(raw) // 24):
+        t, o, c, lo, hi, v = struct.unpack(">5if", raw[i * 24:(i + 1) * 24])
+        if v > 0:
+            out[period_start + t] = (o / point, hi / point, lo / point, c / point, float(v))
+    return out
+
+
+def _dukascopy_get(session: requests.Session, url: str) -> bytes:
+    for attempt in range(6):
+        try:
+            resp = session.get(url, timeout=30)
+        except (requests.ConnectionError, requests.Timeout):
+            # Dukascopy sometimes drops or stalls a connection; back off and retry
+            time.sleep(3 * (attempt + 1))
+            continue
+        if resp.status_code == 404:
+            return b""  # not published yet (current period)
+        if resp.status_code in (429, 503):
+            time.sleep(2)
+            continue
+        resp.raise_for_status()
+        time.sleep(0.1)
+        return resp.content
+    raise requests.ConnectionError(f"Dukascopy kept failing for {url}; rerun to resume (completed files are cached)")
+
+
+def _fx_session() -> requests.Session:
+    s = requests.Session()
+    s.headers["User-Agent"] = "Mozilla/5.0 (jev-loop research)"
+    return s
+
+
+def load_fx_hourly(symbol: str, start: dt.datetime, verbose: bool = True) -> Bars:
+    """Hourly BID candles from Dukascopy, one cached file per completed month.
+    Keyed by the hour's start; only hours the market was open."""
+    point = FX_POINT[symbol]
+    folder = HISTORY_DIR / "dukascopy" / f"{symbol}_1h"
+    folder.mkdir(parents=True, exist_ok=True)
+    now = dt.datetime.now(dt.UTC)
+    this_month = (now.year, now.month)
+    out: Bars = {}
+    session, fetched = None, 0
+    y, m = start.year, start.month
+    while (y, m) <= this_month:
+        path = folder / f"{y:04d}-{m:02d}.json"
+        month_start = int(dt.datetime(y, m, 1, tzinfo=dt.UTC).timestamp())
+        if (y, m) != this_month and path.exists():
+            bars = {int(k): tuple(v) for k, v in json.loads(path.read_text()).items()}
+        else:
+            session = session or _fx_session()
+            url = DUKASCOPY_URL.format(symbol=symbol, y=y, m0=m - 1, rest="BID_candles_hour_1.bi5")
+            bars = _parse_bi5(_dukascopy_get(session, url), month_start, point)
+            fetched += 1
+            if (y, m) != this_month:
+                path.write_text(json.dumps(bars))
+        out.update(bars)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    if verbose and fetched:
+        print(f"  {symbol} 1h: fetched {fetched} month files (total {len(out)} open-market hours)")
+    return {k: v for k, v in out.items() if k >= int(start.timestamp())}
+
+
+def load_fx_minutes(symbol: str, first_day: dt.date, last_day: dt.date, verbose: bool = True) -> Bars:
+    """1-minute BID candles from Dukascopy, one cached file per completed day."""
+    point = FX_POINT[symbol]
+    folder = HISTORY_DIR / "dukascopy" / f"{symbol}_1m"
+    folder.mkdir(parents=True, exist_ok=True)
+    today = dt.datetime.now(dt.UTC).date()
+    out: Bars = {}
+    session, fetched = None, 0
+    day = first_day
+    while day <= min(last_day, today - dt.timedelta(days=1)):  # today is not published yet; asking stalls
+        path = folder / f"{day.isoformat()}.json"
+        day_start = int(dt.datetime.combine(day, dt.time(), tzinfo=dt.UTC).timestamp())
+        if day < today and path.exists():
+            bars = {int(k): tuple(v) for k, v in json.loads(path.read_text()).items()}
+        else:
+            session = session or _fx_session()
+            url = DUKASCOPY_URL.format(symbol=symbol, y=day.year, m0=day.month - 1,
+                                       rest=f"{day.day:02d}/BID_candles_min_1.bi5")
+            bars = _parse_bi5(_dukascopy_get(session, url), day_start, point)
+            fetched += 1
+            if day < today:
+                path.write_text(json.dumps(bars))
+        out.update(bars)
+        day += dt.timedelta(days=1)
+    if verbose and fetched:
+        print(f"  {symbol} 1m: fetched {fetched} day files (total {len(out)} open-market minutes)")
+    return out

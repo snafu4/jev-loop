@@ -32,7 +32,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .history import LOG_DIR, load_hourly, load_stock_bars
+from .history import LOG_DIR, load_fx_hourly, load_hourly, load_stock_bars
 from .indicators import bars_to_frame, build_features, forward_log_return, label_end_time
 
 OUT_DIR = LOG_DIR / "phase1"
@@ -44,7 +44,11 @@ OUT_DIR = LOG_DIR / "phase1"
 MARKETS = {
     "btc": {"horizons": [4, 24], "cost": 0.005, "bar": "1h", "short": False},
     "spy": {"horizons": [8, 13], "cost": 0.0002, "bar": "30m regular-hours", "short": True},
+    # EURUSD: ~1 pip retail spread is ~0.009% round trip; 0.02% is conservative.
+    # Not tradable on Alpaca (no forex); this is research on Dukascopy data.
+    "eurusd": {"horizons": [4, 24], "cost": 0.0002, "bar": "1h (24x5)", "short": True},
 }
+DEFAULT_START = {"btc": "2021-01-01", "spy": "2019-01-01", "eurusd": "2019-01-01"}
 THRESHOLDS = (0.55, 0.60)  # fixed in advance, not tuned on results
 
 
@@ -166,6 +170,11 @@ def report(oos: pd.DataFrame, horizon_h: int, cost: float = 0.005, bar: str = "1
 
 
 def _load(market: str, start: dt.datetime):
+    if market == "eurusd":
+        # 24x5: only the hours the market was open (no fake weekend bars)
+        eur = bars_to_frame(load_fx_hourly("EURUSD", start), fill_grid=False)
+        gbp = bars_to_frame(load_fx_hourly("GBPUSD", start), fill_grid=False)
+        return eur, build_features(eur, gbp, main_label="eur", other_label="gbp", weekends=False)
     if market == "btc":
         btc = bars_to_frame(load_hourly("BTC-USD", start))
         eth = bars_to_frame(load_hourly("ETH-USD", start))
@@ -178,7 +187,8 @@ def _load(market: str, start: dt.datetime):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jev-loop phase1")
     parser.add_argument("--market", choices=sorted(MARKETS), default="btc",
-                        help="btc: hourly Coinbase BTC-USD (ETH as cross-asset); spy: 30-minute regular-hours SPY (QQQ)")
+                        help="btc: hourly Coinbase BTC-USD (ETH as cross-asset); spy: 30-minute regular-hours SPY (QQQ); "
+                             "eurusd: hourly Dukascopy EURUSD (GBPUSD)")
     parser.add_argument("--start", default=None, help="first day of history (btc 2021-01-01, spy 2019-01-01)")
     parser.add_argument("--horizons", type=int, nargs="+", default=None, help="prediction horizons in bars")
     parser.add_argument("--cost", type=float, default=None, help="round-trip trading cost as a fraction")
@@ -189,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     horizons = args.horizons or cfg["horizons"]
     cost = cfg["cost"] if args.cost is None else args.cost
 
-    start = dt.datetime.fromisoformat(args.start or ("2021-01-01" if args.market == "btc" else "2019-01-01")).replace(tzinfo=dt.UTC)
+    start = dt.datetime.fromisoformat(args.start or DEFAULT_START[args.market]).replace(tzinfo=dt.UTC)
     print("loading history (cached)...")
     prices, feats = _load(args.market, start)
     features = list(feats.columns)
