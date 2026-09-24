@@ -144,6 +144,27 @@ barely moved: its P(up) correlated 0.97 with v2's. Direction AUC 0.48
 (v2 0.55), still well below free trailing volatility (0.67). Trades after
 fees: -0.50% to -0.51% per trade, same as buying every hour.
 
+## Indicators without Jev (`jevloop phase1`)
+
+`uv run python -m jevloop phase1` tests whether indicators derived from
+base data predict BTC: 39 indicators (returns, moving-average distances
+and crossovers, MACD, RSI, stochastics, ATR, Bollinger, realised
+volatility, volume, VWAP, 72h highs/lows, time of day, ETH/BTC) computed
+in code from hourly Coinbase candles since 2021 (`indicators.py`). Models
+are refitted monthly on outcomes already known (walk-forward); the last
+180 days are held out until `--include-holdout`. No Jev calls: TypeSafe's
+docs say Jev "is not a calculator", so numbers stay in code.
+
+**Result (dev period 2022-02 .. 2026-03, holdout untouched):**
+- 4h: a real but small signal. Gradient boosting AUC 0.549 (95%
+  0.541-0.559), logistic 0.542, momentum alone 0.536; steady across
+  2022-2025. Buying when P(up) >= 0.55 earned about +0.05% more per trade
+  than always buying, before fees, against 0.5% round-trip fees: every
+  rule lost about 0.4% per trade after fees.
+- 24h: indicators no better than chance (AUC 0.51); momentum alone 0.52.
+- Fees, not prediction, are the binding constraint here: the 4h edge
+  would need round-trip costs under about 0.07%.
+
 ## Fees (why this strategy loses money)
 
 Alpaca charges crypto fees, on paper too: 0.15% maker, 0.25% taker at the

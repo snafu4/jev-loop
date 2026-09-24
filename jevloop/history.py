@@ -123,3 +123,47 @@ def load_bars(source: str, first_day: dt.date, last_day: dt.date, verbose: bool 
         out.update(day_bars)
         day += dt.timedelta(days=1)
     return out
+
+
+# ------------------------------------------------ hourly, multi-year ----
+
+COINBASE_PRODUCT_CANDLES_URL = "https://api.exchange.coinbase.com/products/{product}/candles"
+
+
+def load_hourly(product: str, start: dt.datetime, verbose: bool = True) -> Bars:
+    """Hourly Coinbase candles for `product` (e.g. "BTC-USD") from `start`
+    to the last completed hour, keyed by the hour's start (a bar keyed t
+    closes at t+3600). Cached in one file per product; only hours after
+    the cache's last bar are downloaded (300 candles per request)."""
+    folder = HISTORY_DIR / "coinbase_1h"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{product}.json"
+    bars: Bars = {}
+    if path.exists():
+        bars = {int(k): tuple(v) for k, v in json.loads(path.read_text()).items()}
+    start_ts = int(start.timestamp()) // 3600 * 3600
+    end_ts = int(dt.datetime.now(dt.UTC).timestamp()) // 3600 * 3600  # current hour is incomplete
+    have = [k for k in bars if k >= start_ts]
+    fetch_from = start_ts if not have or min(have) > start_ts + 3600 else max(have) + 3600
+    if fetch_from < end_ts:
+        session = _session("coinbase")
+        url = COINBASE_PRODUCT_CANDLES_URL.format(product=product)
+        s = fetch_from
+        n_before = len(bars)
+        while s < end_ts:
+            e = min(s + 300 * 3600, end_ts)
+            resp = session.get(url, params={"granularity": 3600, "start": _iso(dt.datetime.fromtimestamp(s, dt.UTC)),
+                                            "end": _iso(dt.datetime.fromtimestamp(e, dt.UTC))}, timeout=30)
+            if resp.status_code == 429:
+                time.sleep(2)
+                continue
+            resp.raise_for_status()
+            for ts, low, high, opn, close, vol in resp.json():
+                if s <= ts < e:
+                    bars[int(ts)] = (opn, high, low, close, vol)
+            s = e
+            time.sleep(0.15)
+        path.write_text(json.dumps(bars))
+        if verbose:
+            print(f"  {product}: +{len(bars) - n_before} hourly bars (cache now {len(bars)})")
+    return {k: v for k, v in bars.items() if k >= start_ts}

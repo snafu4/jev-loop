@@ -10,7 +10,8 @@ dependencies = [
 
 [project.optional-dependencies]
 calibrate = ["matplotlib>=3.8"]
-dev = ["pytest>=8.0"]
+research = ["numpy>=1.26", "pandas>=2.2", "scikit-learn>=1.5"]
+dev = ["pytest>=8.0", "numpy>=1.26", "pandas>=2.2", "scikit-learn>=1.5"]
 
 [project.scripts]
 jev-loop = "jevloop.__main__:main"
