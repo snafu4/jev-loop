@@ -27,14 +27,20 @@ from .history import Bars
 HOUR = 3600
 
 
-def bars_to_frame(bars: Bars) -> pd.DataFrame:
-    """Hourly bars (keyed by bar start) -> DataFrame indexed by bar CLOSE
-    time, on a complete hourly grid. A missing hour carries the last close
-    forward with zero volume (nothing traded)."""
+def bars_to_frame(bars: Bars, bar_seconds: int = HOUR, fill_grid: bool = True) -> pd.DataFrame:
+    """Bars (keyed by bar start) -> DataFrame indexed by bar CLOSE time.
+
+    fill_grid=True (24/7 crypto): a complete grid, where a missing bar
+    carries the last close forward with zero volume (nothing traded).
+    fill_grid=False (stocks): only the bars that exist, so nights and
+    weekends are not filled with fake flat bars; windows then count
+    trading bars, not clock hours."""
     ks = sorted(bars)
-    idx = pd.to_datetime([k + HOUR for k in ks], unit="s", utc=True)
+    idx = pd.to_datetime([k + bar_seconds for k in ks], unit="s", utc=True)
     df = pd.DataFrame([bars[k] for k in ks], index=idx, columns=["open", "high", "low", "close", "volume"])
-    full = pd.date_range(idx[0], idx[-1], freq="h", tz="UTC")
+    if not fill_grid:
+        return df
+    full = pd.date_range(idx[0], idx[-1], freq=pd.Timedelta(seconds=bar_seconds), tz="UTC")
     df = df.reindex(full)
     df["close"] = df["close"].ffill()
     for col in ("open", "high", "low"):
@@ -55,7 +61,11 @@ def _hours_since_extreme(s: pd.Series, n: int, highest: bool) -> pd.Series:
     return s.rolling(n).apply(lambda w: n - 1 - fn(w), raw=True)
 
 
-def build_features(btc: pd.DataFrame, eth: pd.DataFrame) -> pd.DataFrame:
+def build_features(btc: pd.DataFrame, eth: pd.DataFrame, main_label: str = "btc", other_label: str = "eth",
+                   tz: str = "UTC", weekends: bool = True) -> pd.DataFrame:
+    """Indicators for `btc` (the traded asset) with `eth` as the
+    cross-asset. Windows count bars (hourly for crypto, 30-minute
+    regular-hours bars for stocks). Time of day is taken in `tz`."""
     c, h, lo, v = btc["close"], btc["high"], btc["low"], btc["volume"]
     logc = np.log(c)
     f = pd.DataFrame(index=btc.index)
@@ -104,19 +114,30 @@ def build_features(btc: pd.DataFrame, eth: pd.DataFrame) -> pd.DataFrame:
     f["hours_since_high_72h"] = _hours_since_extreme(h, 72, highest=True)
     f["hours_since_low_72h"] = _hours_since_extreme(lo, 72, highest=False)
 
-    hour = btc.index.hour
+    local = btc.index.tz_convert(tz)
+    hour = local.hour + local.minute / 60
     f["hour_sin"], f["hour_cos"] = np.sin(2 * np.pi * hour / 24), np.cos(2 * np.pi * hour / 24)
-    f["weekend"] = (btc.index.dayofweek >= 5).astype(float)
+    if weekends:
+        f["weekend"] = (local.dayofweek >= 5).astype(float)
 
+    pair = f"{other_label}{main_label}"
     ratio = np.log(eth["close"].reindex(btc.index).ffill() / c)
-    f["ethbtc_ret_24h"] = ratio - ratio.shift(24)
-    f["ethbtc_ret_168h"] = ratio - ratio.shift(168)
+    f[f"{pair}_ret_24h"] = ratio - ratio.shift(24)
+    f[f"{pair}_ret_168h"] = ratio - ratio.shift(168)
     loge = np.log(eth["close"].reindex(btc.index).ffill())
-    f["eth_ret_24h"] = loge - loge.shift(24)
+    f[f"{other_label}_ret_24h"] = loge - loge.shift(24)
     return f
 
 
 def forward_log_return(btc: pd.DataFrame, horizon_h: int) -> pd.Series:
-    """Label for row t: log return from close at t to close at t + horizon."""
+    """Label for row t: log return from close at t to the close `horizon_h`
+    bars later."""
     logc = np.log(btc["close"])
     return logc.shift(-horizon_h) - logc
+
+
+def label_end_time(btc: pd.DataFrame, horizon_h: int) -> pd.Series:
+    """When row t's label is known: the close time `horizon_h` bars later.
+    On stocks that can be the next morning, so walk-forward must use this,
+    not t + horizon hours."""
+    return pd.Series(btc.index, index=btc.index).shift(-horizon_h)

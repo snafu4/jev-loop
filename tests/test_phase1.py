@@ -55,6 +55,8 @@ def test_walk_forward_trains_only_on_resolved_outcomes(monkeypatch):
     data = pd.DataFrame({"x": rng.normal(size=n), "ret_24h": rng.normal(size=n)}, index=idx)
     data["fwd"] = rng.normal(size=n)
     data["up"] = (data["fwd"] > 0).astype(int)
+    data["label_end"] = pd.Series(idx, index=idx).shift(-24)
+    data = data.dropna()
 
     seen = []
 
@@ -75,3 +77,29 @@ def test_walk_forward_trains_only_on_resolved_outcomes(monkeypatch):
     # and no test row's outcome runs past the end
     assert oos.index.max() <= idx[-1] - pd.Timedelta(hours=horizon)
     assert set(["y", "ret", "base rate so far"]).issubset(oos.columns)
+
+
+def test_stock_frame_keeps_only_real_bars_and_labels_resolve_next_morning():
+    import datetime as dt
+
+    from jevloop.history import _is_regular_hours
+    from jevloop.indicators import label_end_time
+
+    ny = dt.timezone(dt.timedelta(hours=-4))  # EDT
+    at = lambda h, m: int(dt.datetime(2026, 9, 22, h, m, tzinfo=ny).timestamp())  # a Tuesday  # noqa: E731
+    assert _is_regular_hours(at(9, 30), 1800) and _is_regular_hours(at(15, 30), 1800)
+    assert not _is_regular_hours(at(9, 0), 1800) and not _is_regular_hours(at(16, 0), 1800)
+    sat = int(dt.datetime(2026, 9, 26, 10, 0, tzinfo=ny).timestamp())
+    assert not _is_regular_hours(sat, 1800)
+
+    # two sessions of 13 bars: no fake overnight bars, and a 13-bar label
+    # from the first bar of day 1 resolves at day 2's first close
+    bars = {}
+    for d in (22, 23):
+        for i in range(13):
+            ts = int(dt.datetime(2026, 9, d, 9, 30, tzinfo=ny).timestamp()) + i * 1800
+            bars[ts] = (100.0, 100.0, 100.0, 100.0, 1.0)
+    df = bars_to_frame(bars, bar_seconds=1800, fill_grid=False)
+    assert len(df) == 26
+    end = label_end_time(df, 13)
+    assert end.iloc[0] == df.index[13]  # next morning, not 6.5 hours later

@@ -40,6 +40,7 @@ uv run python -m jevloop explain-split                 # the deterministic vs pr
 uv run python -m jevloop calibrate                     # Brier score + reliability table
 uv run python -m jevloop replay                        # score Jev on 30 days of history (see Testing Jev on history)
 uv run python -m jevloop replay --score-only           # re-score saved answers, no Jev calls
+uv run python -m jevloop phase1 --market btc|spy        # do derived indicators predict? (no Jev)
 uv run python -m jevloop serve                         # dashboard at http://127.0.0.1:8765
 ```
 
@@ -164,6 +165,16 @@ docs say Jev "is not a calculator", so numbers stay in code.
 - 24h: indicators no better than chance (AUC 0.51); momentum alone 0.52.
 - Fees, not prediction, are the binding constraint here: the 4h edge
   would need round-trip costs under about 0.07%.
+
+**SPY (`--market spy`: 30-minute regular-hours SIP bars since 2019, QQQ as
+the cross-asset, 0.02% round-trip cost; dev 2020-04 .. 2026-03):** no
+signal. AUC 0.50-0.51 at 8 bars (~4h) and 13 bars (next day), every 95%
+interval spanning 0.5; momentum alone 0.48. Long rules made small gains
+only because SPY drifted up (always-long: +0.025% / +0.054% per trade after
+costs); gradient boosting long at P >= 0.55 over 13 bars made +0.070%,
+within noise of that. Shorts lost. So: BTC has a weak real 4h signal but
+costs 0.5% to trade; SPY costs ~0.02% to trade but these indicators find
+nothing in it.
 
 ## Fees (why this strategy loses money)
 
